@@ -21,7 +21,7 @@ def parse_trackmate_xml(xml_path):
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    # --- collect all spots ---
+    # Collect all spots
     spots = []
     for elem in root.iter():
         if _localname(elem.tag) == 'Spot':
@@ -40,7 +40,7 @@ def parse_trackmate_xml(xml_path):
     if spots_df.empty:
         raise ValueError(f"No <Spot> elements found in {xml_path}")
 
-    # --- map spot_id → track_id ---
+    # Map spot_id > track_id
     spot_to_track = {}
     for elem in root.iter():
         if _localname(elem.tag) == 'Track':
@@ -61,7 +61,7 @@ def parse_trackmate_xml(xml_path):
 
     spots_df["track_id"] = spots_df["spot_id"].map(spot_to_track).astype("Int64")
 
-    # --- per-track summary stats ---
+    # Per-track summary stats
     has_track = spots_df["track_id"].notna()
     grouped = spots_df[has_track].groupby("track_id", sort=True)
 
