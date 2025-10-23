@@ -37,8 +37,8 @@ def match_points(gt_pts, pred_pts, distance_thresh):
     return matches, unmatched_gt, unmatched_pred
 
 
-def compute_tra(gt_spots, pred_spots, distance_thresh=5.0,
-                weights=None, verbose=False):
+def compute_tra(gt_spots, pred_spots, gt_edges=None, pred_edges=None,
+                distance_thresh=5.0, weights=None):
     """
     Compute a centroid-based approximate TRA metric between ground truth and prediction.
 
@@ -47,11 +47,11 @@ def compute_tra(gt_spots, pred_spots, distance_thresh=5.0,
     gt_spots, pred_spots : pd.DataFrame
         Must contain columns ['frame','POSITION_X','POSITION_Y','track_id']
         (and 'POSITION_Z' if 3D)
+    gt_edges, pred_edges : pd.DataFrame
     distance_thresh : float
         Maximum centroid distance (in same units as coordinates) for a match.
     weights : dict, optional
         e.g., {'FN':1, 'FP':1, 'IDS':1, 'LNK':1}
-    verbose : bool
 
     Returns
     -------
@@ -104,27 +104,70 @@ def compute_tra(gt_spots, pred_spots, distance_thresh=5.0,
                 total_IDS += 1
                 gt_to_pred[gt_tid] = pr_tid
 
-    # Compare lineage links (parent–child relationships)
-    if {'parent_id','child_id'}.issubset(gt_spots.columns) and \
-       {'parent_id','child_id'}.issubset(pred_spots.columns):
-        gt_links = set(zip(gt_spots['parent_id'], gt_spots['child_id']))
-        pr_links = set(zip(pred_spots['parent_id'], pred_spots['child_id']))
-        # Remove NaN entries
-        gt_links = {(int(a), int(b)) for a,b in gt_links if not pd.isna(a) and not pd.isna(b)}
-        pr_links = {(int(a), int(b)) for a,b in pr_links if not pd.isna(a) and not pd.isna(b)}
-        missed = gt_links - pr_links
-        extra  = pr_links - gt_links
-        total_LNK = len(missed) + len(extra)
+    # Compare lineage links (parent–child relationships) on matched spots
+    if gt_edges is not None and pred_edges is not None:
+        # Build mapping: frame, gt_spot_idx -> pred_spot_idx
+        spot_matches = {}
+        for f, pairs in frame_matches.items():
+            gt_f = gt_spots[gt_spots['frame'] == f]
+            pr_f = pred_spots[pred_spots['frame'] == f]
+            # build reverse lookup by track_id
+            gt_by_tid = gt_f.set_index('track_id')['spot_id'].to_dict()
+            pr_by_tid = pr_f.set_index('track_id')['spot_id'].to_dict()
+            for gt_tid, pr_tid in pairs:
+                if gt_tid in gt_by_tid and pr_tid in pr_by_tid:
+                    spot_matches[gt_by_tid[gt_tid]] = pr_by_tid[pr_tid]
 
-    # Compute TRA score
+        gt_edge_set = set(tuple(x) for x in gt_edges[['source','target']].itertuples(index=False))
+        pr_edge_set = set(tuple(x) for x in pred_edges[['source','target']].itertuples(index=False))
+
+        matched_edges = 0
+        missed_edges = 0
+        extra_edges = 0
+
+        # Check for GT edges that are not respected in prediction
+        for s_gt, t_gt in gt_edge_set:
+            s_pr = spot_matches.get(s_gt)
+            t_pr = spot_matches.get(t_gt)
+            if s_pr is not None and t_pr is not None:
+                if (s_pr, t_pr) in pr_edge_set:
+                    matched_edges += 1
+                else:
+                    missed_edges += 1
+            else:
+                missed_edges += 1
+
+        # Optionally: check for predicted edges that connect unmatched or wrong cells
+        #for s_pr, t_pr in pr_edge_set:
+        #    inv_map = {v:k for k,v in spot_matches.items()}
+        #    s_gt = inv_map.get(s_pr)
+        #    t_gt = inv_map.get(t_pr)
+        #    if s_gt is not None and t_gt is not None:
+        #        if (s_gt, t_gt) not in gt_edge_set:
+        #            extra_edges += 1
+        #    else:
+        #        extra_edges += 1
+
+        total_LNK = missed_edges# + extra_edges
+
+
+    # Compute weighted error sum
     num = (weights['FN']*total_FN +
            weights['FP']*total_FP +
            weights['IDS']*total_IDS +
-           weights['LNK']*total_LNK)
-    TRA = max(0.0, 1.0 - num / max(1,total_GT))
+           weights['LNK']*total_LNK
+           )
 
-    if verbose:
-        print(f"FN={total_FN}, FP={total_FP}, IDS={total_IDS}, LNK={total_LNK}, total_GT={total_GT}, TRA={TRA:.4f}")
+    # Compute TRA metric
+    N = len(gt_spots)
+    M = len(gt_edges) if gt_edges is not None else 0
 
-    return dict(TRA=TRA, FN=total_FN, FP=total_FP, IDS=total_IDS,
+    TRA_nodes = max(0.0, 1.0 - num / max(1, N))
+    TRA_nodes_edges = max(0.0, 1.0 - num / max(1, N + M))
+
+    print(f"FN={total_FN}, FP={total_FP}, IDS={total_IDS}, LNK={total_LNK}")
+    print(f"TRA (nodes) = {TRA_nodes:.4f}")
+    print(f"TRA (nodes+edges) = {TRA_nodes_edges:.4f}")
+
+    return dict(TRA=TRA_nodes, FN=total_FN, FP=total_FP, IDS=total_IDS,
                 LNK=total_LNK, total_GT=total_GT, matches=frame_matches)
