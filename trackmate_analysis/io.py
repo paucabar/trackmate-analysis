@@ -7,16 +7,37 @@ def _localname(tag):
     return tag.split('}')[-1] if '}' in tag else tag
 
 
-def parse_trackmate_xml(xml_path):
+def parse_trackmate_xml(
+    xml_path,
+    pixel_size=1.0,         # µm per pixel
+    time_interval=1.0,      # seconds per frame
+    arrest_threshold=0.2,   # µm/s
+    ref_point=None          # optional (x, y) tuple
+):
     """
     Parse a TrackMate XML file to extract spots and track statistics.
+
+    Optional parameters allow computing motility metrics in physical units.
+
+    Parameters
+    ----------
+    xml_path : str
+        Path to the TrackMate XML file.
+    pixel_size : float, optional
+        Spatial calibration (µm/pixel). Default = 1.0.
+    time_interval : float, optional
+        Temporal calibration (s/frame). Default = 1.0.
+    arrest_threshold : float, optional
+        Threshold (µm/s) below which movement is considered arrested.
+    ref_point : tuple of (float, float), optional
+        A reference (x, y) coordinate to compute approach/distance to.
 
     Returns
     -------
     spots_df : pd.DataFrame
-        Contains spot features (frame, position, intensities, etc.).
+        Spot-level data.
     track_stats : pd.DataFrame
-        Per-track summary statistics (duration, displacement, intensity, etc.).
+        Per-track summary statistics including motility metrics.
     """
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -40,7 +61,7 @@ def parse_trackmate_xml(xml_path):
     if spots_df.empty:
         raise ValueError(f"No <Spot> elements found in {xml_path}")
 
-    # Map spot_id > track_id
+    # Map spot_id -> track_id
     spot_to_track = {}
     for elem in root.iter():
         if _localname(elem.tag) == 'Track':
@@ -61,7 +82,7 @@ def parse_trackmate_xml(xml_path):
 
     spots_df["track_id"] = spots_df["spot_id"].map(spot_to_track).astype("Int64")
 
-    # Per-track summary stats
+    # Compute per-track summary
     has_track = spots_df["track_id"].notna()
     grouped = spots_df[has_track].groupby("track_id", sort=True)
 
@@ -69,10 +90,11 @@ def parse_trackmate_xml(xml_path):
         df_sorted = df.sort_values("frame")
         start_frame = df_sorted["frame"].iloc[0]
         end_frame = df_sorted["frame"].iloc[-1]
-        duration = int(end_frame - start_frame + 1)
+        duration_frames = int(end_frame - start_frame + 1)
+        duration_sec = duration_frames * time_interval
         n_spots = len(df_sorted)
 
-        # dynamically detect intensity channels
+        # intensities
         intensity_cols = [c for c in df_sorted.columns if "MEAN_INTENSITY" in c]
         if intensity_cols:
             mean_int = df_sorted[intensity_cols].mean(axis=1).mean()
@@ -81,34 +103,61 @@ def parse_trackmate_xml(xml_path):
             mean_int = np.nan
             max_int = np.nan
 
-        coords = df_sorted[
-            [c for c in ["POSITION_X", "POSITION_Y", "POSITION_Z"] if c in df_sorted.columns]
-        ].to_numpy(dtype=float, copy=False)
+        # coordinates
+        coords_cols = [c for c in ["POSITION_X", "POSITION_Y", "POSITION_Z"] if c in df_sorted.columns]
+        coords = df_sorted[coords_cols].to_numpy(dtype=float, copy=False)
+        coords *= pixel_size  # convert to µm
 
         if coords.shape[0] >= 2:
             step_dists = np.linalg.norm(np.diff(coords, axis=0), axis=1)
             path_length = float(step_dists.sum())
             mean_step = float(np.nanmean(step_dists))
             displacement = float(np.linalg.norm(coords[-1] - coords[0]))
+            # motility metrics
+            speed = path_length / duration_sec if duration_sec > 0 else np.nan  # µm/s
+            directionality = displacement / path_length if path_length > 0 else np.nan
+            # instantaneous speeds
+            inst_speeds = step_dists / time_interval
+            arrest_coeff = np.sum(inst_speeds < arrest_threshold) / len(inst_speeds)
+            # mean squared displacement from start
+            squared_disp = np.mean(np.sum((coords - coords[0]) ** 2, axis=1))
         else:
             path_length = 0.0
             mean_step = np.nan
             displacement = 0.0
+            speed = np.nan
+            directionality = np.nan
+            arrest_coeff = np.nan
+            squared_disp = np.nan
+
+        # reference point approach
+        approach_dist = np.nan
+        if ref_point is not None and len(ref_point) == 2:
+            start_d = np.linalg.norm(coords[0, :2] - np.array(ref_point))
+            end_d = np.linalg.norm(coords[-1, :2] - np.array(ref_point))
+            approach_dist = end_d - start_d  # negative = approached, positive = moved away
 
         return pd.Series({
             "start_frame": start_frame,
             "end_frame": end_frame,
-            "duration": duration,
+            "duration_frames": duration_frames,
+            "duration_sec": duration_sec,
             "n_spots": n_spots,
             "mean_intensity": mean_int,
             "max_intensity": max_int,
-            "path_length": path_length,
-            "mean_step_length": mean_step,
-            "displacement": displacement,
+            "path_length_um": path_length,
+            "mean_step_um": mean_step,
+            "displacement_um": displacement,
+            "speed_um_s": speed,
+            "directionality": directionality,
+            "mean_sq_disp": squared_disp,
+            "arrest_coeff": arrest_coeff,
+            "approach_to_ref_um": approach_dist,
         })
 
     track_stats = grouped.apply(compute_per_track).reset_index().set_index("track_id")
     return spots_df, track_stats
+
 
 
 def extract_image_metadata(xml_path):

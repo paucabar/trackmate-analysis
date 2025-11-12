@@ -113,10 +113,10 @@ def plot_trajectories(spots_df, edges_df=None, width=None, height=None,
 def plot_track_histograms(track_stats):
     """Plot histograms for track duration and path length."""
     fig, axs = plt.subplots(1, 2, figsize=(10, 4))
-    axs[0].hist(track_stats["duration"].dropna(), bins=20)
+    axs[0].hist(track_stats["duration_frames"].dropna(), bins=20)
     axs[0].set_title("Track duration (frames)")
     axs[0].set_xlabel("frames")
-    axs[1].hist(track_stats["path_length"].dropna(), bins=20)
+    axs[1].hist(track_stats["path_length_um"].dropna(), bins=20)
     axs[1].set_title("Path length (units)")
     axs[1].set_xlabel("units")
     plt.tight_layout()
