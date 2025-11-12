@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 
-def plot_trajectories(spots_df, width=None, height=None, ax=None, figsize=(6,6), show_labels=False):
+def plot_trajectories_old(spots_df, width=None, height=None, ax=None, figsize=(6,6), show_labels=False):
     """Plot XY trajectories, optionally fit to original image dimensions."""
     if {"POSITION_X", "POSITION_Y"}.issubset(spots_df.columns):
         xcol, ycol = "POSITION_X", "POSITION_Y"
@@ -29,6 +29,74 @@ def plot_trajectories(spots_df, width=None, height=None, ax=None, figsize=(6,6),
         if show_labels:
             ax.text(df[xcol].iloc[0], df[ycol].iloc[0], str(tid), fontsize=7, color=color)
 
+    ax.set_xlabel(xcol)
+    ax.set_ylabel(ycol)
+    ax.set_title("Trajectories (XY)")
+    ax.set_aspect("equal", adjustable="box")
+
+    if width is not None and height is not None:
+        ax.set_xlim(0, width)
+        ax.set_ylim(0, height)
+
+    plt.tight_layout()
+    return fig, ax
+
+def plot_trajectories(spots_df, edges_df=None, width=None, height=None,
+                      ax=None, figsize=(6,6), show_labels=False):
+    """
+    Plot XY trajectories with optional lineage edges.
+
+    If `edges_df` is provided, only edges are drawn between linked spots
+    (no implicit line between sequential points in a track).
+    Otherwise, tracks are connected by frame order.
+    """
+
+    # Determine coordinate columns
+    if {"POSITION_X", "POSITION_Y"}.issubset(spots_df.columns):
+        xcol, ycol = "POSITION_X", "POSITION_Y"
+    elif {"x", "y"}.issubset(spots_df.columns):
+        xcol, ycol = "x", "y"
+    else:
+        raise KeyError("No position columns found in DataFrame.")
+
+    # Prepare axis
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    # Untracked spots
+    untracked = spots_df[spots_df["track_id"].isna()]
+    if not untracked.empty:
+        ax.scatter(untracked[xcol], untracked[ycol], s=6, alpha=0.6, label="untracked")
+
+    # Prepare color mapping
+    tracks = spots_df.dropna(subset=["track_id"]).groupby("track_id", sort=True)
+    cmap = plt.get_cmap("tab20")
+    track_colors = {tid: cmap(i % cmap.N) for i, (tid, _) in enumerate(tracks)}
+
+    # Plot spots only
+    for tid, df in tracks:
+        color = track_colors[tid]
+        ax.scatter(df[xcol], df[ycol], s=10, color=color, alpha=0.9)
+        if show_labels:
+            ax.text(df[xcol].iloc[0], df[ycol].iloc[0], str(tid),
+                    fontsize=7, color=color)
+
+    # Plot edges (if provided)
+    if edges_df is not None and not edges_df.empty:
+        spot_lookup = spots_df.set_index("spot_id")[[xcol, ycol, "track_id"]]
+        for _, row in edges_df.iterrows():
+            s, t = row["source"], row["target"]
+            if s in spot_lookup.index and t in spot_lookup.index:
+                xs, ys = spot_lookup.loc[s, [xcol, ycol]]
+                xt, yt = spot_lookup.loc[t, [xcol, ycol]]
+                tid = spot_lookup.loc[s, "track_id"]
+                color = track_colors.get(tid, "gray")
+                ax.plot([xs, xt], [ys, yt], color=color,
+                        linewidth=1, alpha=0.6, zorder=0)
+
+    # Final formatting
     ax.set_xlabel(xcol)
     ax.set_ylabel(ycol)
     ax.set_title("Trajectories (XY)")

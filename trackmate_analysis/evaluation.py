@@ -86,8 +86,12 @@ def compute_tra(gt_spots, pred_spots, gt_edges=None, pred_edges=None,
             pred_f[coord_cols].to_numpy(),
             distance_thresh
         )
-        pairs = [(int(gt_f.loc[i,'track_id']), int(pred_f.loc[j,'track_id']))
-                for i,j in matches]
+        pairs = [
+            (int(gt_tid), int(pr_tid))
+            for i, j in matches
+            for gt_tid, pr_tid in [(gt_f.loc[i, 'track_id'], pred_f.loc[j, 'track_id'])]
+            if pd.notna(gt_tid) and pd.notna(pr_tid)
+        ]
         frame_matches[frame] = pairs
         total_FN += len(um_gt)
         total_FP += len(um_pr)
